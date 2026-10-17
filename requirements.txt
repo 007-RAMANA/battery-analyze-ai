@@ -1,6 +1,5 @@
+streamlit
 pandas
 openpyxl
-pymupdf
-python-docx
-streamlit
-google-genai
+xlrd
+groq
