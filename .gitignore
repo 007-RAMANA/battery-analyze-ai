@@ -38,3 +38,13 @@ installer_output/
 app_backup.py
 backend/.env
 backend/__pycache__/
+backend/.env
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+build/
+dist/
+installer_output/
+*.bak
