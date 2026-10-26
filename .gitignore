@@ -1,12 +1,40 @@
-﻿.venv/
-venv/
-__pycache__/
-*.py[cod]
 .env
 .env.*
 !.env.example
+**/.env
+**/.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.pyc
 .streamlit/secrets.toml
-watched_files/
+backend/.env
 reports/
-*.log
-.DS_Store
+watched_files/
+
+# Python environment and cache
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+.env.*
+!.env.example
+!.env.template
+backend/.env
+.streamlit/secrets.toml
+secrets.toml
+
+# Build and installer output
+build/
+dist/
+installer_output/
+
+# Backup files
+*.bak
+app_backup.py
+backend/.env
+backend/__pycache__/

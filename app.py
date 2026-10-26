@@ -238,6 +238,8 @@ st.markdown('<div class="section-label">Workspace overview</div>', unsafe_allow_
 # ---------------------------------------------------------
 # SETTINGS
 # ---------------------------------------------------------
+from pathlib import Path
+
 DEFAULT_FOLDER = Path(r"C:\BatteryAI\watched_files")
 DEFAULT_FOLDER.mkdir(parents=True, exist_ok=True)
 
@@ -602,6 +604,267 @@ if "battery_result" in st.session_state:
             )
         else:
             st.info("Cycle summary available illa.")
+
+    # -----------------------------------------------------
+    # FULL CHARGE TIME + SAFE FAST CHARGE ESTIMATION
+    # -----------------------------------------------------
+    st.divider()
+    st.markdown(
+        '<div class="section-label">03 / Prediction phase</div>',
+        unsafe_allow_html=True,
+    )
+    st.subheader("🔮 Battery Predictions")
+    st.caption(
+        "Three prediction modules. Results are estimates based on entered specifications and recorded data; "
+        "missing measurements are not invented."
+    )
+    pred_charge_tab, pred_life_tab, pred_idle_tab = st.tabs([
+        "⚡ Full charge & safe fast charge",
+        "🔋 Battery health / life",
+        "⏱️ Idle charge loss",
+    ])
+
+    with pred_charge_tab:
+        st.subheader("⚡ Full Charge Time + Safe Fast Charge Estimation")
+        st.caption(
+            "Estimate charging time from battery capacity, current state of charge, "
+            "charging current, efficiency, and CC/CV finishing allowance."
+        )
+
+        st.markdown("#### 🔋 Charging specifications")
+        charge_cols = st.columns(3)
+
+        rated_capacity_ah = charge_cols[0].number_input(
+            "Rated capacity (Ah)",
+            min_value=0.1,
+            max_value=500.0,
+            value=32.0,
+            step=1.0,
+            key="pred_rated_capacity_ah",
+            help="Default reference is 32 Ah. Verify this against the actual battery label.",
+        )
+        current_soc = charge_cols[1].number_input(
+            "Current charge / SOC (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=50.0,
+            step=5.0,
+            key="pred_current_soc_percent",
+            help="Enter the known BMS/charger SOC. Voltage alone is not a reliable SOC measurement.",
+        )
+        charging_current_a = charge_cols[2].number_input(
+            "Planned charging current (A)",
+            min_value=0.1,
+            max_value=10.0,
+            value=5.0,
+            step=0.5,
+            key="pred_planned_charging_current_a",
+            help="Workbench screening reference maximum: 10 A. Use the lower approved battery/BMS/charger limit.",
+        )
+
+        efficiency_percent = st.slider(
+            "Planning efficiency (%)",
+            min_value=80,
+            max_value=100,
+            value=90,
+            step=1,
+            key="pred_charge_efficiency_percent",
+        )
+        cv_overhead_percent = st.slider(
+            "CC/CV finishing allowance (%)",
+            min_value=0,
+            max_value=40,
+            value=20,
+            step=5,
+            key="pred_cv_overhead_percent",
+            help="Extra estimated time for current tapering near full charge.",
+        )
+
+        remaining_ah = rated_capacity_ah * (100.0 - current_soc) / 100.0
+        if charging_current_a > 0 and efficiency_percent > 0:
+            base_hours = remaining_ah / charging_current_a / (efficiency_percent / 100.0)
+            estimated_hours = base_hours * (1.0 + cv_overhead_percent / 100.0)
+            total_minutes = round(estimated_hours * 60)
+            estimated_hours_display = total_minutes // 60
+            estimated_minutes_display = total_minutes % 60
+
+            st.markdown("#### ⏱️ Full-charge time estimate")
+            time_cols = st.columns(3)
+            time_cols[0].metric("Estimated charge remaining", f"{remaining_ah:.2f} Ah")
+            time_cols[1].metric("Current-based time", f"{base_hours:.2f} hours")
+            time_cols[2].metric(
+                "Estimated full-charge time",
+                f"{estimated_hours_display} h {estimated_minutes_display} min",
+            )
+
+        st.markdown("#### 🛡️ Safe fast-charge screening")
+        if charging_current_a > 10.0:
+            st.error("Selected current exceeds the 10 A workbench screening reference. Do not proceed until the approved limits are verified.")
+        elif charging_current_a > 5.0:
+            st.warning(
+                f"Selected current is {charging_current_a:.1f} A. Verify that the battery cells, BMS, charger, connectors, and wiring all support this current."
+            )
+        else:
+            st.info(
+                f"Selected current is {charging_current_a:.1f} A and is within the workbench's 10 A screening reference. "
+                "This does not by itself confirm that fast charging is safe."
+            )
+
+        # Summarize actual recorded measurements separately from the manual estimate.
+        _voltage_col = next((c for c in ["Voltage(V)", "Voltage", "voltage", "Voltage (V)"] if c in df.columns), None)
+        _current_col = next((c for c in ["Current(A)", "Current", "current", "Current (A)"] if c in df.columns), None)
+        _status_col = next((c for c in ["Status", "status", "step_type", "Phase", "phase"] if c in df.columns), None)
+        _time_col = next((c for c in ["Time", "time", "Timestamp", "timestamp", "DateTime", "datetime"] if c in df.columns), None)
+
+        _all_voltage = pd.to_numeric(df[_voltage_col], errors="coerce").dropna() if _voltage_col else pd.Series(dtype=float)
+        _all_current = pd.to_numeric(df[_current_col], errors="coerce").dropna() if _current_col else pd.Series(dtype=float)
+        _charge_rows = df.iloc[0:0]
+        if _status_col:
+            _status_text = df[_status_col].astype(str)
+            _charge_rows = df.loc[
+                _status_text.str.contains("charge", case=False, na=False)
+                & ~_status_text.str.contains("discharge", case=False, na=False)
+            ]
+        _logged_charge_current = pd.to_numeric(_charge_rows[_current_col], errors="coerce").dropna() if _current_col and not _charge_rows.empty else pd.Series(dtype=float)
+        _positive_logged_current = _logged_charge_current[_logged_charge_current > 0]
+
+        recorded_cols = st.columns(3)
+        recorded_cols[0].metric("Highest recorded voltage", f"{_all_voltage.max():.2f} V" if not _all_voltage.empty else "N/A")
+        recorded_cols[1].metric("Peak logged charging current", f"{_positive_logged_current.max():.2f} A" if not _positive_logged_current.empty else "N/A")
+        recorded_cols[2].metric("Rows in charge phase", f"{len(_charge_rows):,}")
+
+        if not _all_voltage.empty:
+            _peak_voltage = float(_all_voltage.max())
+            if _peak_voltage > 54.6:
+                st.error(f"Recorded voltage reached {_peak_voltage:.2f} V, above the 54.6 V workbench reference. Verify the actual battery/charger specifications immediately.")
+            else:
+                st.caption(f"Recorded peak voltage ({_peak_voltage:.2f} V) is below the 54.6 V workbench reference; this alone does not prove safety.")
+
+        if not _positive_logged_current.empty:
+            _peak_logged_current = float(_positive_logged_current.max())
+            if _peak_logged_current > 10.0:
+                st.error(f"Recorded charging current reached {_peak_logged_current:.2f} A, above the 10 A workbench screening reference. Verify the source data and actual limits.")
+            else:
+                st.caption(f"Recorded peak charging current: {_peak_logged_current:.2f} A (compared with the 10 A workbench screening reference).")
+
+        if not _charge_rows.empty and _time_col:
+            _charge_times = pd.to_datetime(_charge_rows[_time_col], errors="coerce").dropna()
+            if len(_charge_times) >= 2:
+                _observed_minutes = (_charge_times.max() - _charge_times.min()).total_seconds() / 60.0
+                st.metric("Recorded charging-phase duration", f"{_observed_minutes:.1f} min")
+            else:
+                st.caption("At least two valid timestamps are needed to calculate recorded charging duration.")
+        else:
+            st.caption("Recorded charging duration is unavailable unless the file contains a charge-phase/status column and valid timestamps.")
+
+        st.warning(
+            "This is an estimate and historical-data screening only, not a live charger reading or safety certification. "
+            "Always follow the battery manufacturer's approved charging voltage/current and the actual BMS and charger limits. "
+            "The 10 A and 54.6 V values are project reference values and must be verified for the actual battery pack."
+        )
+
+
+    # Shared column detection for health and idle predictions
+    _pred_voltage_col = next((c for c in ["Voltage(V)", "Voltage", "voltage", "Voltage (V)"] if c in df.columns), None)
+    _pred_current_col = next((c for c in ["Current(A)", "Current", "current", "Current (A)"] if c in df.columns), None)
+    _pred_capacity_col = next((c for c in ["Capacity(Ah)", "Capacity", "capacity", "Capacity (Ah)"] if c in df.columns), None)
+    _pred_status_col = next((c for c in ["Status", "status", "step_type", "Phase", "phase"] if c in df.columns), None)
+    _pred_time_col = next((c for c in ["Time", "time", "Timestamp", "timestamp", "DateTime", "datetime"] if c in df.columns), None)
+    _pred_cycles_col = next((c for c in ["Cycles", "Cycle", "cycles", "cycle"] if c in df.columns), None)
+    _pred_soc_col = next((c for c in ["SOC", "SOC(%)", "SOC (%)", "State of Charge", "state_of_charge"] if c in df.columns), None)
+
+    _pred_work = df.copy()
+    _pred_work["_v"] = pd.to_numeric(_pred_work[_pred_voltage_col], errors="coerce") if _pred_voltage_col else float("nan")
+    _pred_work["_capacity"] = pd.to_numeric(_pred_work[_pred_capacity_col], errors="coerce") if _pred_capacity_col else float("nan")
+    _pred_work["_cycles"] = pd.to_numeric(_pred_work[_pred_cycles_col], errors="coerce") if _pred_cycles_col else float("nan")
+    _pred_work["_time"] = pd.to_datetime(_pred_work[_pred_time_col], errors="coerce") if _pred_time_col else pd.NaT
+    if _pred_status_col:
+        _pred_status = _pred_work[_pred_status_col].astype(str)
+        _pred_discharge = _pred_work.loc[_pred_status.str.contains("discharge", case=False, na=False)].copy()
+        _pred_idle = _pred_work.loc[_pred_status.str.contains("idle", case=False, na=False)].copy()
+    else:
+        _pred_discharge = _pred_work.iloc[0:0].copy()
+        _pred_idle = _pred_work.iloc[0:0].copy()
+
+    with pred_life_tab:
+        st.markdown("#### 🔋 Battery health and remaining life")
+        _rated_ah = 32.0
+        _discharge_caps = _pred_discharge["_capacity"].dropna()
+        _cycle_vals = _pred_work["_cycles"].dropna()
+        _cycle_count = int(_cycle_vals.max()) if not _cycle_vals.empty and _cycle_vals.max() >= 0 else None
+        _h1, _h2, _h3 = st.columns(3)
+        _h1.metric("Rated reference capacity", f"{_rated_ah:.1f} Ah")
+        _h2.metric("Highest logged discharge capacity", f"{_discharge_caps.max():.2f} Ah" if not _discharge_caps.empty else "N/A")
+        _h3.metric("Recorded cycle count", str(_cycle_count) if _cycle_count is not None else "N/A")
+
+        st.markdown("**Battery health (SOH)**")
+        if not _discharge_caps.empty:
+            st.warning(
+                f"Highest logged discharge-phase capacity is {_discharge_caps.max():.2f} Ah, "
+                "but the file does not prove this is a complete, valid capacity test. SOH is not calculated from an unverified segment."
+            )
+        else:
+            st.warning("No discharge-phase capacity measurements found. SOH cannot be estimated from this file.")
+        st.info(
+            "To calculate SOH reliably, record a complete discharge-capacity test using the approved cut-off voltage. "
+            "SOH = measured full-test capacity / rated capacity × 100."
+        )
+
+        st.markdown("**Remaining battery life**")
+        if _cycle_count is not None and _cycle_count > 0:
+            st.write(f"Recorded cycle count in the selected file: **{_cycle_count}**.")
+        else:
+            st.write("A reliable cycle count was not found in the selected file.")
+        st.info(
+            "Remaining cycle life is unavailable until the manufacturer's rated cycle life and a reliable current cycle count are supplied. "
+            "The app will not invent a remaining-life number."
+        )
+        st.caption("Project reference only: 32 Ah, 48 V nominal, 54.6 V maximum, 34.45 V minimum, NMC 13S10P. Verify against the actual battery label.")
+
+    with pred_idle_tab:
+        st.markdown("#### ⏱️ Idle charge loss")
+        if _pred_idle.empty:
+            st.info("No rows marked Idle were found. Add idle measurements with timestamps to estimate idle changes.")
+        elif _pred_time_col is None:
+            st.warning("Idle rows were found, but there is no timestamp column to calculate elapsed time.")
+        else:
+            _idle_df = _pred_idle.dropna(subset=["_time"]).sort_values("_time").copy()
+            if len(_idle_df) < 2:
+                st.warning("At least two valid idle timestamps are required.")
+            else:
+                _elapsed_h = (_idle_df["_time"].iloc[-1] - _idle_df["_time"].iloc[0]).total_seconds() / 3600.0
+                _duration_cols = st.columns(3)
+                _duration_cols[0].metric("Recorded idle duration", f"{_elapsed_h:.2f} hours" if _elapsed_h >= 0 else "Invalid time order")
+                _vvals = _idle_df["_v"].dropna()
+                if len(_vvals) >= 2:
+                    _vchange = float(_idle_df["_v"].iloc[-1] - _idle_df["_v"].iloc[0])
+                    _duration_cols[1].metric("Voltage change", f"{_vchange:+.3f} V")
+                else:
+                    _duration_cols[1].metric("Voltage change", "N/A")
+                _capvals = _idle_df["_capacity"].dropna()
+                if len(_capvals) >= 2 and _elapsed_h > 0:
+                    _cap_change = float(_capvals.iloc[-1] - _capvals.iloc[0])
+                    _duration_cols[2].metric("Capacity change", f"{_cap_change:+.4f} Ah")
+                    if _cap_change < 0:
+                        st.write(f"Observed capacity decrease rate: **{abs(_cap_change) / _elapsed_h:.4f} Ah/hour**.")
+                    else:
+                        st.caption("Logged capacity did not decrease during this interval; this does not prove zero self-discharge.")
+                else:
+                    _duration_cols[2].metric("Capacity change", "N/A")
+                    st.warning("Comparable capacity readings are unavailable, so actual Ah loss cannot be calculated.")
+                if _pred_soc_col and _elapsed_h > 0:
+                    _soc_values = pd.to_numeric(_idle_df[_pred_soc_col], errors="coerce").dropna()
+                    if len(_soc_values) >= 2:
+                        _soc_delta = float(_soc_values.iloc[-1] - _soc_values.iloc[0])
+                        st.metric("Observed SOC change", f"{_soc_delta:+.2f}%")
+                        st.caption(f"Observed SOC change rate: {_soc_delta / _elapsed_h * 24:+.3f}% per day.")
+                st.dataframe(
+                    _idle_df[[c for c in [_pred_time_col, _pred_status_col, _pred_voltage_col, _pred_capacity_col] if c and c in _idle_df.columns]],
+                    use_container_width=True,
+                )
+            st.caption(
+                "Voltage change alone is not a direct measurement of charge loss. Use comparable SOC/capacity readings and stable test conditions."
+            )
 
     # -----------------------------------------------------
     # WARNINGS

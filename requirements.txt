@@ -1,5 +1,5 @@
-streamlit
-pandas
-openpyxl
-xlrd
-groq
+<<<<<<< HEAD
+...
+=======
+...
+>>>>>>> e8796c2
